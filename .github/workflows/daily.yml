@@ -1,0 +1,31 @@
+name: Daily Pokémon Prices
+
+on:
+  schedule:
+    - cron: '0 1 * * *'   # 3:00am Madrid (verano CEST = UTC+2)
+    - cron: '30 1 * * *'  # 3:30am Madrid — segunda pasada para sets con timeout
+  workflow_dispatch:        # permite lanzar manualmente desde la pestaña Actions
+
+jobs:
+  fetch-prices:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install python-dotenv requests supabase -q
+
+      - name: Run daily_prices.py
+        env:
+          POKEMON_TCG_API_KEY: ${{ secrets.POKEMON_TCG_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python daily_prices.py
