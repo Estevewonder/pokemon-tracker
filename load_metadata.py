@@ -208,22 +208,25 @@ def upsert_sets(sets_data: list[dict], eras: dict[str, int]) -> tuple[int, int]:
     return inserted, skipped
 
 
-def upsert_cards(cards: list[dict], set_id: str) -> int:
+def upsert_cards(cards: list[dict], set_id: str, era_id: int) -> int:
     inserted = 0
     for card in cards:
         row = {
-            "id":       card["id"],
-            "set_id":   set_id,
-            "name":     card.get("name"),
-            "rarity":   card.get("rarity"),
-            "number":   card.get("number"),
-            "supertype": card.get("supertype"),
-            "subtypes": card.get("subtypes"),   # lista, Supabase lo guarda como jsonb/text[]
-            "types":    card.get("types"),
-            "hp":       card.get("hp"),
-            "image_small": card.get("images", {}).get("small"),
-            "image_large": card.get("images", {}).get("large"),
-            "tcgplayer_url": card.get("tcgplayer", {}).get("url"),
+            "id":               card["id"],
+            "set_id":           set_id,
+            "era_id":           era_id,
+            "name":             card.get("name"),
+            "rarity":           card.get("rarity"),
+            "number":           card.get("number"),
+            "collector_number": card.get("number"),
+            "artist":           card.get("artist"),
+            "supertype":        card.get("supertype"),
+            "subtypes":         card.get("subtypes"),
+            "types":            card.get("types"),
+            "hp":               card.get("hp"),
+            "image_small":      card.get("images", {}).get("small"),
+            "image_large":      card.get("images", {}).get("large"),
+            "tcgplayer_url":    card.get("tcgplayer", {}).get("url"),
         }
         try:
             supabase.table("cards").upsert(row).execute()
@@ -279,7 +282,7 @@ def main():
         filtered  = [c for c in raw_cards if c.get("rarity") in allowed]
 
         if filtered:
-            n = upsert_cards(filtered, s["id"])
+            n = upsert_cards(filtered, s["id"], eras[era_name])
             total_cards += n
             print(f"           → {n}/{len(raw_cards)} cartas con rareza relevante insertadas")
         else:
