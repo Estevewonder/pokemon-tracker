@@ -139,9 +139,9 @@ def fetch_prices_for_set(set_id: str, our_ids: set) -> list[dict]:
                     market = pick_market(prices)
                     if market is not None:
                         rows.append({
-                            "card_id":    card["id"],
-                            "date":       TODAY,
-                            "market_usd": market,
+                            "card_id":     card["id"],
+                            "date":        TODAY,
+                            "price_market": market,
                         })
                 if len(cards) < 250:
                     return rows
