@@ -29,3 +29,25 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python daily_prices.py
+
+  fetch-graded:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180   # lunes: ~4800 cartas × 1.2s ≈ 97 min; días normales ≈ 46 min
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install python-dotenv requests supabase beautifulsoup4 -q
+
+      - name: Run daily_graded.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python daily_graded.py

@@ -1,56 +1,42 @@
 #!/usr/bin/env python3
 """
-daily_prices.py - Extrae precios diarios TCGPlayer (USD market price) para todas las
-cartas en Supabase e inserta en prices_en. Seguro re-ejecutar (upsert por card_id + date).
+daily_prices.py - Precios diarios TCGPlayer con frecuencia variable por era.
+
+Frecuencia:
+  - Todos los días:   Scarlet & Violet, Sword & Shield, Mega Evolution
+  - Solo lunes:       WOTC, EX, DP·BW, XY, Sun & Moon
+
+Columna destino: prices_en.price_market
 """
 
-import subprocess
-import sys
-
-def _pip(package):
-    subprocess.check_call([sys.executable, "-m", "pip", "install", package, "-q"])
-
-def ensure_deps():
-    deps = {"python-dotenv": "dotenv", "requests": "requests", "supabase": "supabase"}
-    missing = [pkg for pkg, mod in deps.items() if not __import__.__module__ or
-               not next((True for _ in [__import__(mod)] if True), None)
-               if not _try_import(mod)]
-    if missing:
-        print(f"Instalando dependencias: {', '.join(missing)}")
-        for pkg in missing:
-            _pip(pkg)
+import subprocess, sys
 
 def _try_import(mod):
-    try:
-        __import__(mod)
-        return True
-    except ImportError:
-        return False
+    try: __import__(mod); return True
+    except ImportError: return False
 
 def ensure_deps():
     deps = {"python-dotenv": "dotenv", "requests": "requests", "supabase": "supabase"}
-    missing = [pkg for pkg, mod in deps.items() if not _try_import(mod)]
+    missing = [p for p, m in deps.items() if not _try_import(m)]
     if missing:
-        print(f"Instalando dependencias: {', '.join(missing)}")
-        for pkg in missing:
-            _pip(pkg)
-        print("Listo.\n")
+        for p in missing:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", p, "-q"])
 
 ensure_deps()
 
-import os
-import time
-import datetime
-import requests
+import os, time, datetime, requests
 from dotenv import load_dotenv
 from supabase import create_client
 
-# --- Credenciales ---
-load_dotenv()
+# ─────────────────────────────────────────────
+# CONFIG
+# ─────────────────────────────────────────────
+load_dotenv('/Users/estevewonder/pokemon-tracker/.env')
+
 POKEMON_API_KEY = os.getenv("POKEMON_TCG_API_KEY", "").strip()
-_raw_url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
-SUPABASE_URL = _raw_url.removesuffix("/rest/v1")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
+_raw_url        = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+SUPABASE_URL    = _raw_url.removesuffix("/rest/v1")
+SUPABASE_KEY    = os.getenv("SUPABASE_KEY", "").strip()
 
 if not all([POKEMON_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
     print("ERROR: Faltan credenciales en .env")
@@ -60,18 +46,17 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 API_BASE   = "https://api.pokemontcg.io/v2"
 HEADERS    = {"X-Api-Key": POKEMON_API_KEY}
-RATE_LIMIT = 0.25  # segundos entre requests
+RATE_LIMIT = 0.25
 TODAY      = datetime.date.today().isoformat()
+IS_MONDAY  = datetime.date.today().weekday() == 0   # lunes = 0
 
-# Orden de preferencia para elegir el precio de mercado
+# Eras que se actualizan todos los días
+MODERN_ERAS = {"Scarlet & Violet", "Sword & Shield", "Mega Evolution"}
+
+# Orden de preferencia de variante de precio TCGPlayer
 PRICE_PRIORITY = [
-    "holofoil",
-    "1stEditionHolofoil",
-    "unlimitedHolofoil",
-    "reverseHolofoil",
-    "normal",
-    "1stEdition",
-    "unlimited",
+    "holofoil", "1stEditionHolofoil", "unlimitedHolofoil",
+    "reverseHolofoil", "normal", "1stEdition", "unlimited",
 ]
 
 
@@ -80,28 +65,34 @@ PRICE_PRIORITY = [
 # ─────────────────────────────────────────────
 
 def pick_market(prices: dict) -> float | None:
-    """Devuelve el primer market price disponible según prioridad."""
     for variant in PRICE_PRIORITY:
         val = prices.get(variant, {}).get("market")
         if val is not None:
             return float(val)
-    # Fallback: cualquier variante con market
     for v in prices.values():
         if isinstance(v, dict) and v.get("market") is not None:
             return float(v["market"])
     return None
 
 
-def get_cards_by_set() -> dict[str, set]:
-    """{set_id: {card_id, ...}} para todas las cartas en Supabase."""
+def get_set_era_map() -> dict[str, str]:
+    """{set_id: era_name} para todos los sets de la DB."""
+    era_rows = supabase.table("eras").select("id,name").execute().data
+    era_id_to_name = {r["id"]: r["name"] for r in era_rows}
+    set_rows = supabase.table("sets").select("id,era_id").execute().data
+    return {r["id"]: era_id_to_name.get(r["era_id"], "") for r in set_rows}
+
+
+def get_cards_by_set(allowed_set_ids: set) -> dict[str, set]:
+    """{set_id: {card_id, ...}} filtrando solo los sets indicados."""
     by_set: dict[str, set] = {}
-    page_size = 1000
-    offset = 0
+    page_size, offset = 1000, 0
     while True:
         resp = supabase.table("cards").select("id,set_id") \
             .range(offset, offset + page_size - 1).execute()
         for row in resp.data:
-            by_set.setdefault(row["set_id"], set()).add(row["id"])
+            if row["set_id"] in allowed_set_ids:
+                by_set.setdefault(row["set_id"], set()).add(row["id"])
         if len(resp.data) < page_size:
             break
         offset += page_size
@@ -109,9 +100,7 @@ def get_cards_by_set() -> dict[str, set]:
 
 
 def fetch_prices_for_set(set_id: str, our_ids: set) -> list[dict]:
-    """Descarga precios del set desde la API y filtra a nuestras cartas."""
-    rows = []
-    page = 1
+    rows, page = [], 1
     while True:
         retries = 3
         while retries:
@@ -123,26 +112,17 @@ def fetch_prices_for_set(set_id: str, our_ids: set) -> list[dict]:
                     timeout=60,
                 )
                 if resp.status_code in (429, 504):
-                    retries -= 1
-                    time.sleep(10)
-                    continue
+                    retries -= 1; time.sleep(10); continue
                 if resp.status_code == 404:
-                    retries -= 1
-                    time.sleep(3)
-                    continue
+                    retries -= 1; time.sleep(3); continue
                 resp.raise_for_status()
                 cards = resp.json().get("data", [])
                 for card in cards:
                     if card["id"] not in our_ids:
                         continue
-                    prices = card.get("tcgplayer", {}).get("prices", {})
-                    market = pick_market(prices)
+                    market = pick_market(card.get("tcgplayer", {}).get("prices", {}))
                     if market is not None:
-                        rows.append({
-                            "card_id":     card["id"],
-                            "date":        TODAY,
-                            "price_market": market,
-                        })
+                        rows.append({"card_id": card["id"], "date": TODAY, "price_market": market})
                 if len(cards) < 250:
                     return rows
                 page += 1
@@ -158,13 +138,11 @@ def fetch_prices_for_set(set_id: str, our_ids: set) -> list[dict]:
 
 
 def upsert_batch(rows: list[dict]) -> int:
-    """Inserta en chunks de 500. Devuelve total insertado."""
     inserted = 0
     for i in range(0, len(rows), 500):
         chunk = rows[i:i + 500]
         try:
-            supabase.table("prices_en") \
-                .upsert(chunk, on_conflict="card_id,date").execute()
+            supabase.table("prices_en").upsert(chunk, on_conflict="card_id,date").execute()
             inserted += len(chunk)
         except Exception as exc:
             print(f"  WARN error insertando chunk: {exc}")
@@ -176,45 +154,84 @@ def upsert_batch(rows: list[dict]) -> int:
 # ─────────────────────────────────────────────
 
 def main():
-    print("=" * 62)
+    mode = "LUNES — todas las eras" if IS_MONDAY else \
+           f"día normal — eras modernas ({', '.join(sorted(MODERN_ERAS))})"
+
+    print("=" * 66)
     print(f" Pokémon TCG Tracker — Precios Diarios  {TODAY}")
-    print("=" * 62)
+    print(f" Modo: {mode}")
+    print("=" * 66)
 
-    # 1. Cargar cartas desde Supabase
-    print("\n[1/3] Cargando cartas desde Supabase...")
-    cards_by_set = get_cards_by_set()
-    total_cards = sum(len(v) for v in cards_by_set.values())
-    print(f"  {total_cards} cartas en {len(cards_by_set)} sets")
+    # 1. Determinar sets activos según día de la semana
+    print("\n[1/3] Cargando sets y era map desde Supabase...")
+    set_era_map = get_set_era_map()
 
-    # 2. Extraer precios de la API set a set
-    print(f"\n[2/3] Extrayendo precios desde API...")
-    print("-" * 62)
+    if IS_MONDAY:
+        active_set_ids = set(set_era_map.keys())
+    else:
+        active_set_ids = {sid for sid, era in set_era_map.items() if era in MODERN_ERAS}
+
+    # Agrupar sets por era para el log
+    era_sets: dict[str, list] = {}
+    for sid in active_set_ids:
+        era = set_era_map.get(sid, "?")
+        era_sets.setdefault(era, []).append(sid)
+
+    print(f"  {len(active_set_ids)} sets activos hoy:")
+    for era, sids in sorted(era_sets.items()):
+        print(f"    {era}: {len(sids)} sets")
+
+    # 2. Cargar cartas de esos sets
+    print("\n[2/3] Cargando cartas y extrayendo precios...")
+    print("-" * 66)
+    cards_by_set = get_cards_by_set(active_set_ids)
+    total_cards  = sum(len(v) for v in cards_by_set.values())
+    print(f"  {total_cards} cartas a procesar")
 
     all_rows = []
-    sets = sorted(cards_by_set.keys())
-    for i, set_id in enumerate(sets, 1):
-        our_ids = cards_by_set[set_id]
+    era_stats: dict[str, dict] = {}
+    sets_sorted = sorted(cards_by_set.keys())
+
+    for i, set_id in enumerate(sets_sorted, 1):
+        our_ids  = cards_by_set[set_id]
+        era      = set_era_map.get(set_id, "?")
         price_rows = fetch_prices_for_set(set_id, our_ids)
         all_rows.extend(price_rows)
-        found = len(price_rows)
-        total = len(our_ids)
+
+        found    = len(price_rows)
+        total    = len(our_ids)
         no_price = total - found
-        suffix = f"  (sin precio TCGPlayer: {no_price})" if no_price else ""
-        print(f"  [{i:>3}/{len(sets)}] {set_id:<16} {found:>4}/{total} precios{suffix}")
+        suffix   = f"  (sin precio: {no_price})" if no_price else ""
+        print(f"  [{i:>3}/{len(sets_sorted)}] {set_id:<16} {found:>4}/{total}{suffix}")
+
+        if era not in era_stats:
+            era_stats[era] = {"sets": 0, "cards": 0, "prices": 0}
+        era_stats[era]["sets"]   += 1
+        era_stats[era]["cards"]  += total
+        era_stats[era]["prices"] += found
+
         time.sleep(RATE_LIMIT)
 
-    # 3. Insertar en Supabase
+    # 3. Insertar
     print(f"\n[3/3] Insertando {len(all_rows)} precios en Supabase...")
     inserted = upsert_batch(all_rows)
 
     cards_con_precio = len({r["card_id"] for r in all_rows})
     cards_sin_precio = total_cards - cards_con_precio
 
-    print("\n" + "=" * 62)
-    print(f" COMPLETADO: {inserted} precios insertados para {TODAY}")
-    print(f"  Cartas con precio:    {cards_con_precio}")
-    print(f"  Cartas sin precio:    {cards_sin_precio}  (no listadas en TCGPlayer)")
-    print("=" * 62)
+    print("\n" + "=" * 66)
+    print(f" COMPLETADO: {inserted} precios insertados — {TODAY}")
+    print(f" Modo: {mode}")
+    print("=" * 66)
+    print(f"  {'ERA':<22} {'SETS':>5}  {'CARTAS':>7}  {'CON PRECIO':>10}")
+    print(f"  {'─'*22} {'─'*5}  {'─'*7}  {'─'*10}")
+    for era, st in sorted(era_stats.items()):
+        print(f"  {era:<22} {st['sets']:>5}  {st['cards']:>7}  {st['prices']:>10}")
+    print(f"  {'─'*22} {'─'*5}  {'─'*7}  {'─'*10}")
+    print(f"  {'TOTAL':<22} {sum(s['sets'] for s in era_stats.values()):>5}"
+          f"  {total_cards:>7}  {cards_con_precio:>10}")
+    print(f"\n  Sin precio TCGPlayer: {cards_sin_precio}")
+    print("=" * 66)
 
 
 if __name__ == "__main__":
