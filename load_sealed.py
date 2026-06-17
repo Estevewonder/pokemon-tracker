@@ -227,12 +227,12 @@ def extract_price_rows(chart_data: dict, product_id: str) -> list[dict]:
         if price_cents == 0:
             continue
         dt         = datetime.datetime.fromtimestamp(ts_ms / 1000, tz=datetime.timezone.utc).date()
-        market_usd = round(price_cents / 100, 2)
-        high_usd   = round(high_series.get(ts_ms, 0) / 100, 2) or None
+        price_market = round(price_cents / 100, 2)
+        high_usd     = round(high_series.get(ts_ms, 0) / 100, 2) or None
         rows.append({
             "product_id":   product_id,
             "date":         str(dt),
-            "price_market": market_usd,
+            "price_market": price_market,
             "price_low":    None,
             "price_high":   high_usd,
             "source":       "pricecharting",

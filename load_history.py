@@ -170,7 +170,7 @@ def fetch_chart_data(url: str) -> tuple[dict, str]:
 
 def extract_prices(chart_data: dict, field: str = PRICE_FIELD) -> list[dict]:
     """
-    Extrae pares (date, market_usd) del campo indicado de chart_data.
+    Extrae pares (date, price_market) del campo indicado de chart_data.
     Precios en la fuente son céntimos → ÷ 100 = USD.
     Filtra valores 0 (sin datos).
     """
@@ -180,7 +180,7 @@ def extract_prices(chart_data: dict, field: str = PRICE_FIELD) -> list[dict]:
         if price_cents == 0:
             continue
         dt  = datetime.datetime.fromtimestamp(ts_ms / 1000, tz=datetime.timezone.utc).date()
-        rows.append({"date": str(dt), "market_usd": round(price_cents / 100, 2)})
+        rows.append({"date": str(dt), "price_market": round(price_cents / 100, 2)})
     return rows
 
 
@@ -219,7 +219,7 @@ def upsert_prices(card_id: str, prices: list[dict]) -> int:
     """Inserta precios históricos en chunks de 200. Devuelve cuántos insertó."""
     if not prices:
         return 0
-    rows = [{"card_id": card_id, "date": p["date"], "price_market": p["market_usd"]}
+    rows = [{"card_id": card_id, "date": p["date"], "price_market": p["price_market"]}
             for p in prices]
     inserted = 0
     for i in range(0, len(rows), 200):
@@ -368,7 +368,7 @@ def main():
             total_pts += res["points"]
             total_ins += res["inserted"]
             samples_str = "  ".join(
-                f"{s['date']}: ${s['market_usd']:.2f}" for s in res["samples"]
+                f"{s['date']}: ${s['price_market']:.2f}" for s in res["samples"]
             )
             print(f"         ✓  {res['points']} puntos  |  {res['date_min']} → {res['date_max']}")
             print(f"            {samples_str}")
